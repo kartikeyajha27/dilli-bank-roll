@@ -151,11 +151,11 @@ def move_money(src, dst, amt, note, forced=False):
     return None
 
 
-def join(name):
+def join(name, sid):
     if G["phase"] != "lobby" or len(G["players"]) >= MAX_PLAYERS:
         return None
     pid = uuid.uuid4().hex[:8]
-    G["players"][pid] = {"name": name, "cash": START_CASH, "pos": 0}
+    G["players"][pid] = {"name": name, "cash": START_CASH, "pos": 0, "sid": sid}
     G["order"].append(pid)
     log(f"{name} joined")
     return pid
@@ -418,31 +418,47 @@ def snapshot(me):
 st.set_page_config(page_title="Dilli Bank Roll", page_icon="🏛️")
 st.markdown(CSS, unsafe_allow_html=True)
 
+# Each browser session gets its own ID; a seat belongs to the session that joined it.
+if "sid" not in st.session_state:
+    st.session_state.sid = uuid.uuid4().hex
+SID = st.session_state.sid
+
 me = st.query_params.get("p")
 with LOCK:
-    joined = me in G["players"]
+    pl = G["players"].get(me)
+    mine = bool(pl) and pl.get("sid") == SID
     phase_now = G["phase"]
     full = len(G["players"]) >= MAX_PLAYERS
+    seats = {pid: q["name"] for pid, q in G["players"].items()}
 
-if not joined:
+if not mine:
     st.title("🏛️ Dilli Bank Roll")
-    if phase_now != "lobby":
-        st.warning("A game is already in progress.")
-        st.stop()
-    if full:
+    if phase_now == "lobby" and not full:
+        with st.form("join"):
+            name = st.text_input("Your name")
+            go = st.form_submit_button("Join game", use_container_width=True)
+        if go and name.strip():
+            with LOCK:
+                new_pid = join(name.strip()[:14], SID)
+            if new_pid is None:
+                st.error("Couldn't join (game full or already started).")
+            else:
+                st.query_params["p"] = new_pid
+                st.rerun()
+    elif phase_now == "lobby":
         st.warning("All 4 seats are taken.")
-        st.stop()
-    with st.form("join"):
-        name = st.text_input("Your name")
-        go = st.form_submit_button("Join game", use_container_width=True)
-    if go and name.strip():
-        with LOCK:
-            new_pid = join(name.strip()[:14])
-        if new_pid is None:
-            st.error("Couldn't join (game full or already started).")
-            st.stop()
-        st.query_params["p"] = new_pid
-        st.rerun()
+    else:
+        st.warning("A game is already in progress.")
+
+    if seats:
+        st.markdown("**Already in the game? Tap your name**")
+        for pid, n in seats.items():
+            if st.button(n, key=f"re_{pid}", use_container_width=True):
+                with LOCK:
+                    if pid in G["players"]:
+                        G["players"][pid]["sid"] = SID
+                st.query_params["p"] = pid
+                st.rerun()
     st.stop()
 
 
@@ -465,7 +481,7 @@ def game_view(me):
     if S["phase"] == "over":
         st.success(f"🏆 {players[S['winner']]['name']} wins with ₹{S['nw'][S['winner']]:,}!")
     elif S["phase"] == "lobby":
-        st.caption("Share this page's link. Each phone opens it, enters a name and joins.")
+        st.caption("Others: open the app link with nothing after the .app, enter a name and join.")
         if st.button("▶️ Start game", type="primary", use_container_width=True,
                      disabled=len(order) < 2, key="start"):
             run_action(start_game)
